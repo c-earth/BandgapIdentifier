@@ -33,3 +33,10 @@ def get_phonons(phn_dir):
         phonons.append(phonon)
         data_dict[id] = [torch.tensor(qpts), torch.tensor(phonons)]
     return data_dict
+
+def gen_qpts_file(qpts):
+    data = f'{len(qpts)}\n'
+    for qpt in qpts:
+        data += ' '.join(map(str, qpt)) + '\n'
+    with open('QPOINTS', 'w') as f:
+        f.write(data)
