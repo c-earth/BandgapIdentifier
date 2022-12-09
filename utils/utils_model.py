@@ -1,6 +1,9 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 dtype = torch.float64
+n_features = 2048
 
 class BandAugmentations():
     def __init__(self, delta):
@@ -32,10 +35,13 @@ class FeatureNetwork(torch.nn.Module):
 
 class ProjectionNetwork(torch.nn.Module):
     def __init__(self):
-        pass
+        super().__init__()
+        self.mlp1 = nn.Linear(n_features, n_features)
+        self.mlp2 = nn.Linear(n_features, n_features)
     
     def forward(self, features):
-        pass
+        features = F.relu(self.mlp1(features))
+        return self.mlp2(features)
 
 class CantrastiveNetwork(torch.nn.Module):
     def __init__(self, feature_model, projection_model):
