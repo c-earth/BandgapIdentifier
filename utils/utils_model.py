@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import random
 
 dtype = torch.float64
-n_features = 2048
 
 class BandAugmentations():
     def __init__(self, delta):
@@ -29,21 +28,31 @@ class NCELoss(torch.nn.Module):
         return torch.mean(-sims[pos_mask] + torch.logsumexp(sims, dim = -1))
 
 class FeatureNetwork(torch.nn.Module):
-    def __init__(self):
-        pass
+    def __init__(self, in_size, hidden1, hidden2, out_size):
+        super().__init__()
+        self.dropout = nn.Dropout(0.2)
+        self.fc1 = nn.Linear(in_size, hidden1)
+        self.fc2 = nn.Linear(hidden1, hidden2)
+        self.fc3 = nn.Linear(hidden2, out_size)
 
     def forward(self, bands):
-        pass
+        x = F.relu(self.fc1(bands))
+        x = self.dropout(x)
+        x = F.relu(self.fc2(x))
+        x = self.dropout(x)
+        x = self.fc3(x)
+        return x
 
 class ProjectionNetwork(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, n_features):
         super().__init__()
         self.mlp1 = nn.Linear(n_features, n_features)
         self.mlp2 = nn.Linear(n_features, n_features)
     
     def forward(self, features):
-        features = F.relu(self.mlp1(features))
-        return self.mlp2(features)
+        x = F.relu(self.mlp1(features))
+        x = self.mlp2(x)
+        return x
 
 class ContrastiveNetwork(torch.nn.Module):
     def __init__(self, feature_model, projection_model):
