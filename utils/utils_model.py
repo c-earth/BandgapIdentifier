@@ -45,8 +45,9 @@ class ProjectionNetwork(torch.nn.Module):
         features = F.relu(self.mlp1(features))
         return self.mlp2(features)
 
-class CantrastiveNetwork(torch.nn.Module):
+class ContrastiveNetwork(torch.nn.Module):
     def __init__(self, feature_model, projection_model):
+        super().__init__()
         self.feature_model = feature_model
         self.projection_model = projection_model
     
