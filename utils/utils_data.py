@@ -3,6 +3,7 @@ import glob
 import torch
 import numpy as np
 from mp_api.client import MPRester
+import pickle as pkl
 
 api_key = 'KKYDb56RGe2YQhuLJqE17k7AztkJ6Fyj'
 
@@ -65,3 +66,15 @@ def read_qpts_file(file_name):
 
 def gen_cart_qpts(L, n):
     return L * np.random.uniform(0.0, 1.0, 3*n).reshape((-1, 3))
+
+def load_data(dict_file, phn_dir, dat_dir, cart_qpts):
+    if len(glob.glob(dict_file)) == 0:
+        if len(glob.glob(f'{phn_dir}')) == 0:
+            load_raw(dat_dir)
+        data_dict = get_phonons(phn_dir, cart_qpts)
+        with open(dict_file, 'wb') as f:
+            pkl.dump(data_dict, f)
+    else:
+        with open(dict_file, 'rb') as f:
+            data_dict = pkl.load(f)
+    return data_dict
