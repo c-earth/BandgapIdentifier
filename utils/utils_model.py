@@ -23,5 +23,33 @@ class NCELoss(torch.nn.Module):
         sims = torch.masked_fill(self.sim_fn(batch) / self.T, not_neg_mask, -1e10)
         return torch.mean(-sims[pos_mask] + torch.logsumexp(sims, dim = -1))
 
+class FeatureNetwork(torch.nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self, bands):
+        pass
+
+class ProjectionNetwork(torch.nn.Module):
+    def __init__(self):
+        pass
+    
+    def forward(self, features):
+        pass
+
+class CantrastiveNetwork(torch.nn.Module):
+    def __init__(self, feature_model, projection_model):
+        self.feature_model = feature_model
+        self.projection_model = projection_model
+    
+    def forward(self, data):
+        features = self.feature_model(data.bands)
+        features = self.projection_model(features)
+        return features
+
+def cos_sim(features):
+    nfeatures = torch.nn.functional.normalize(features, p = 2, dim = 1)
+    return torch.matmul(nfeatures, nfeatures.T)
+    
 def train():
     pass
