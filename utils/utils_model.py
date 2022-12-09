@@ -183,7 +183,12 @@ def train(feature_model,
         if scheduler is not None:
             scheduler.step()
 
-
+def loglinspace(rate, step, end=None):
+    t = 0
+    while end is None or t <= end:
+        yield t
+        t = int(t + 1 + step*(1 - math.exp(-t*rate/step)))
+            
 def evaluate(model, dataloader, loss_fn, device):
     model.eval()
     loss_cumulative = 0.
