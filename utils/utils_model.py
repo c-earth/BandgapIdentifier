@@ -26,22 +26,6 @@ class NCELoss(torch.nn.Module):
     def forward(self, features, not_neg_mask, pos_mask):
         sims = torch.masked_fill(self.sim_fn(features) / self.T, not_neg_mask, -1e10)
         return torch.mean(-sims[pos_mask] + torch.logsumexp(sims, dim = -1))
-
-class FeatureNetworkTmp(torch.nn.Module):
-    def __init__(self, in_size, hidden1, hidden2, out_size):
-        super().__init__()
-        self.dropout = nn.Dropout(0.2)
-        self.fc1 = nn.Linear(in_size, hidden1)
-        self.fc2 = nn.Linear(hidden1, hidden2)
-        self.fc3 = nn.Linear(hidden2, out_size)
-
-    def forward(self, bands):
-        x = F.relu(self.fc1(bands))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.fc3(x)
-        return x
     
 def conv3x3x3(in_channels, out_channels, stride = 1, groups = 1, dilation = 1):
     return nn.Conv3d(in_channels, out_channels, kernel_size = 3, stride = stride, padding = dilation, groups = groups, bias = False, dilation = dilation)
