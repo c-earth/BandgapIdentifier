@@ -6,16 +6,28 @@ import random
 dtype = torch.float64
 
 class BandAugmentations():
-    def __init__(self, delta):
-        self.delta = delta
+    def __init__(self, delta, fun=(lambda x : 1/x)):
+        self.delta = delta / 6 # magnitude of the perturbation is roughly 6 before applying delta
+        self.fun = fun
 
     def __call__(self, bands):
-        pivot = [list(range(len(bands))),[random.randint(0, bands.shape[-1]-1)for i in range(len(bands))]]
-        inc_aug = bands + torch.abs(torch.normal(torch.zeros(bands.shape), self.delta*torch.ones(bands.shape)))
-        dec_aug = bands - torch.abs(torch.normal(torch.zeros(bands.shape), self.delta*torch.ones(bands.shape)))
-        inc_aug[pivot] = bands[pivot]
-        dec_aug[pivot] = bands[pivot]
-        return torch.concat([inc_aug, dec_aug], dim = 0)
+        # TODO: make it torch-compatible!!
+        dim_a, dim_b, dim_c = bands.shape
+        sigma_a, sigma_b, sigma_c = self.fun(np.arange(dim_a) + 1), self.fun(np.arange(dim_b) + 1), self.fun(np.arange(dim_c) + 1)
+        f_sin_a, f_cos_a = np.random.normal(scale = sigma_a), np.random.normal(scale = sigma_a)
+        f_sin_b, f_cos_b = np.random.normal(scale = sigma_b), np.random.normal(scale = sigma_b)
+        f_sin_c, f_cos_c = np.random.normal(scale = sigma_c), np.random.normal(scale = sigma_c)
+        diff_a, diff_b, diff_c = np.zeros((dim_a,)), np.zeros((dim_b,)), np.zeros((dim_c,))
+        pivot_a, pivot_b, pivot_c = np.random.randint(dim_a), np.random.randint(dim_b), np.random.randint(dim_c)
+        idx, idy, idz = (np.arange(dim_a) - pivot_a) % dim_a, (np.arange(dim_b) - pivot_b) % dim_b, (np.arange(dim_c) - pivot_c) % dim_c
+        for i in range(dim_a):
+            diff_a += f_sin_a[i] * np.sin(2*np.pi*(i+1)*idx/dim_a) + f_cos_a[i] * np.cos(2*np.pi*(i+1)*idx/dim_a)
+        for i in range(dim_b):
+            diff_b += f_sin_b[i] * np.sin(2*np.pi*(i+1)*idy/dim_b) + f_cos_b[i] * np.cos(2*np.pi*(i+1)*idy/dim_b)
+        for i in range(dim_c):
+            diff_c += f_sin_c[i] * np.sin(2*np.pi*(i+1)*idz/dim_c) + f_cos_c[i] * np.cos(2*np.pi*(i+1)*idz/dim_c)
+        diff = diff_a.reshape(-1,1,1) + diff_b.reshape(1,-1,1) + diff_c.reshape(1,1,-1)
+        return bands + self.delta * np.abs(diff - diff[pivot_a, pivot_b, pivot_c]) * np.random.choice([-1,1],1)
 
 class NCELoss(torch.nn.Module):
     def __init__(self, sim_fn, T = 1):
