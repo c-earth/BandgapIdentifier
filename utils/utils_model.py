@@ -209,8 +209,7 @@ from matplotlib.pyplot import plt
 import numpy as np
 import math
 
-def train(feature_model,
-          projection_model,
+def train(model,
           opt,
           tr_set,
           tr_nums,
@@ -222,7 +221,6 @@ def train(feature_model,
           device,
           batch_size,
           k_fold):
-    model = CantrastiveNetwork(feature_model, projection_model)
     model.to(device)
     checkpoint_generator = loglinspace(0.3, 5)
     checkpoint = next(checkpoint_generator)
