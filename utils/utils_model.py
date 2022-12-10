@@ -243,8 +243,8 @@ def train(feature_model,
         for i, d in enumerate(tr_loader):
             start = time.time()
             d.to(device)
-            batch = model(d)
-            loss = loss_fn(batch).cpu()  #! 
+            features = model(d)
+            loss = loss_fn(batch, not_neg_mask, pos_mask).cpu()  #! define not_neg_mask, pos_mask
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -318,8 +318,8 @@ def evaluate(model, dataloader, loss_fn, device):
     with torch.no_grad():
         for d in dataloader:
             d.to(device)
-            batch = model(d)
-            loss = loss_fn(batch).cpu()  #!
+            features = model(d)
+            loss = loss_fn(batch, not_neg_mask, pos_mask).cpu()  #! define not_neg_mask, pos_mask
             loss_cumulative += loss.detach().item()
     return loss_cumulative/len(dataloader)
 
@@ -347,7 +347,7 @@ def loss_test_plot(model, device, fig_file, dataloader, loss_fn):
         for d in dataloader:
             d.to(device)
             batch = model(d)
-            loss = loss_fn(batch).cpu()  #!
+            loss = loss_fn(batch, not_neg_mask, pos_mask).cpu()  #! define not_neg_mask, pos_mask
             loss_test.append(loss)
     fig, ax = plt.subplots(figsize=(6, 5))
     ax.plot(np.array(loss_test), label = 'testing loss: ' + str(np.mean(loss_test)))
