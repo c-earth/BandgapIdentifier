@@ -18,8 +18,8 @@ def fit_n_gmm(data, n_mixtures, n_features=None, return_model=False):
         raise ValueError(f"incorrect input data dimension, expected (n_bands, n_features), got {data.shape}")
 
     model = GaussianMixture(n_components=n_mixtures).fit(data)
-    bic_score = model.bic(X)
-    labels = model.predict(X)
+    bic_score = model.bic(data)
+    labels = model.predict(data)
     band_groups = [np.where(labels == i) for i in range(n_mixtures)]
     if return_model:
         return bic_score, band_groups, model
@@ -51,7 +51,7 @@ def auto_fit_gmm(data, max_n_mixtures=10, n_features=None):
 if __name__ == "__main__":
     import pdb
     from sklearn.datasets.samples_generator import make_blobs
-    X, y = make_blobs(n_samples=100, n_features=5, centers=5)
+    X, y = make_blobs(n_samples=1000, n_features=510, centers=5)
 
     # scores = list()
     # for i in range(1, 8):
