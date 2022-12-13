@@ -1,52 +1,102 @@
+import time
+import math
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import random
 
-dtype = torch.float64
+from torch_geometric.loader import DataLoader
 
 class BandAugmentations():
-    def __init__(self, delta, fun=(lambda x : 1/x)):
-        self.delta = delta / 6 # magnitude of the perturbation is roughly 6 before applying delta
+    '''
+    phonon frequency response augmentation by fixing one point of each band to remain unchanged 
+    after augmentation. the augmented bands satisfy the phonon band criteria.
+    '''
+    def __init__(self, fun = (lambda x : 1/x)):
+        '''
+        arguments:
+            fun: fourier component decaying function
+        '''
         self.fun = fun
 
     def __call__(self, bands):
-        # TODO: make it torch-compatible!!
-        dim_a, dim_b, dim_c = bands.shape
+        '''
+        arguments:
+            bands: phonon frequency responses data object
+        return:
+            augmented phonon frequency responses
+        '''
+        dim_n, dim_ch, dim_a, dim_b, dim_c = bands.shape
+
+        # set the sampling distribution for fourier components
         sigma_a, sigma_b, sigma_c = self.fun(np.arange(dim_a) + 1), self.fun(np.arange(dim_b) + 1), self.fun(np.arange(dim_c) + 1)
-        f_sin_a, f_cos_a = np.random.normal(scale = sigma_a), np.random.normal(scale = sigma_a)
-        f_sin_b, f_cos_b = np.random.normal(scale = sigma_b), np.random.normal(scale = sigma_b)
-        f_sin_c, f_cos_c = np.random.normal(scale = sigma_c), np.random.normal(scale = sigma_c)
-        diff_a, diff_b, diff_c = np.zeros((dim_a,)), np.zeros((dim_b,)), np.zeros((dim_c,))
-        pivot_a, pivot_b, pivot_c = np.random.randint(dim_a), np.random.randint(dim_b), np.random.randint(dim_c)
+
+        # get fourier components for each axis
+        f_sin_a, f_cos_a = np.random.normal(scale = sigma_a, size = (dim_n, dim_ch, dim_a)), np.random.normal(scale = sigma_a, size = (dim_n, dim_ch, dim_a))
+        f_sin_b, f_cos_b = np.random.normal(scale = sigma_b, size = (dim_n, dim_ch, dim_b)), np.random.normal(scale = sigma_b, size = (dim_n, dim_ch, dim_b))
+        f_sin_c, f_cos_c = np.random.normal(scale = sigma_c, size = (dim_n, dim_ch, dim_c)), np.random.normal(scale = sigma_c, size = (dim_n, dim_ch, dim_c))
+        
+        # select points of each band to remain unchanged
+        pivot_a, pivot_b, pivot_c = np.random.randint(dim_a, size = (dim_n, dim_ch, 1)), np.random.randint(dim_b, size = (dim_n, dim_ch, 1)), np.random.randint(dim_c, size = (dim_n, dim_ch, 1))
+        diff_a, diff_b, diff_c = np.zeros((dim_n, dim_ch, dim_a)), np.zeros((dim_n, dim_ch, dim_b)), np.zeros((dim_n, dim_ch, dim_c))
+        
+        # add all fourier components and add on to the input to get augmented version
         idx, idy, idz = (np.arange(dim_a) - pivot_a) % dim_a, (np.arange(dim_b) - pivot_b) % dim_b, (np.arange(dim_c) - pivot_c) % dim_c
         for i in range(dim_a):
-            diff_a += f_sin_a[i] * np.sin(2*np.pi*(i+1)*idx/dim_a) + f_cos_a[i] * np.cos(2*np.pi*(i+1)*idx/dim_a)
+            diff_a += f_sin_a[:, :, i:i+1] * np.sin(2*np.pi*(i+1)*idx/dim_a) + f_cos_a[:, :, i:i+1] * np.cos(2*np.pi*(i+1)*idx/dim_a)
         for i in range(dim_b):
-            diff_b += f_sin_b[i] * np.sin(2*np.pi*(i+1)*idy/dim_b) + f_cos_b[i] * np.cos(2*np.pi*(i+1)*idy/dim_b)
+            diff_b += f_sin_b[:, :, i:i+1] * np.sin(2*np.pi*(i+1)*idy/dim_b) + f_cos_b[:, :, i:i+1] * np.cos(2*np.pi*(i+1)*idy/dim_b)
         for i in range(dim_c):
-            diff_c += f_sin_c[i] * np.sin(2*np.pi*(i+1)*idz/dim_c) + f_cos_c[i] * np.cos(2*np.pi*(i+1)*idz/dim_c)
-        diff = diff_a.reshape(-1,1,1) + diff_b.reshape(1,-1,1) + diff_c.reshape(1,1,-1)
-        return bands + self.delta * np.abs(diff - diff[pivot_a, pivot_b, pivot_c]) * np.random.choice([-1,1],1)
+            diff_c += f_sin_c[:, :, i:i+1] * np.sin(2*np.pi*(i+1)*idz/dim_c) + f_cos_c[:, :, i:i+1] * np.cos(2*np.pi*(i+1)*idz/dim_c)
+        diff = diff_a.reshape(dim_n, dim_ch, -1, 1, 1) + diff_b.reshape(dim_n, dim_ch, 1, -1, 1) + diff_c.reshape(dim_n, dim_ch, 1, 1, -1)
+        index = np.array(list(np.ndindex(dim_n, dim_ch))).T
+        return  bands + np.std(bands.reshape((dim_n, -1)), axis = -1).reshape((dim_n, 1, 1, 1, 1))*np.abs(diff - diff[index[0], index[1], pivot_a.flatten(), pivot_b.flatten(), pivot_c.flatten()].reshape(dim_n, dim_ch, 1, 1, 1)) * np.random.choice([-1, 1], 1)
 
 class NCELoss(torch.nn.Module):
+    '''
+    noise contrastive estimation (NCE) loss function
+    '''
     def __init__(self, sim_fn, T = 1):
-        super(NCELoss, self).__init__()
+        '''
+        arguments:
+            sim_fn: similarity function
+            T: exponential weight factor
+        '''
+        super().__init__()
         self.sim_fn = sim_fn
         self.T = T
 
-    def forward(self, features, not_neg_mask, pos_mask):
-        sims = torch.masked_fill(self.sim_fn(features) / self.T, not_neg_mask, -1e10)
-        return torch.mean(-sims[pos_mask] + torch.logsumexp(sims, dim = -1))
+    def forward(self, features, non_neg_mask, pos_mask):
+        '''
+        arguments:
+            features: feature vectors on the projected space
+            non_neg_mask: mask for non-negative sample pairs of bands 
+                          with respect to the original material's bands
+            pos_mask: mask for positive sample pairs of bands
+        return:
+            NCE loss value
+        '''
+        sims = torch.masked_fill(self.sim_fn(features) / self.T, non_neg_mask, -1e15)
+        return torch.mean(-sims[pos_mask][:len(features)//2] + torch.logsumexp(sims, dim = -1)[:len(features)//2])
     
 def conv3x3x3(in_channels, out_channels, stride = 1, groups = 1, dilation = 1):
+    '''
+    modified 3D convolution (3, 3, 3) kernel from ResNet
+    '''
     return nn.Conv3d(in_channels, out_channels, kernel_size = 3, stride = stride, padding = dilation, groups = groups, bias = False, dilation = dilation)
 
 
 def conv1x1x1(in_channels, out_channels, stride = 1):
+    '''
+    modified 3D convolution (1, 1, 1) kernel from ResNet
+    '''
     return nn.Conv3d(in_channels, out_channels, kernel_size = 1, stride = stride, bias = False)
 
 class Block(nn.Module):
+    '''
+    modified 3D block layer from ResNet
+    '''
     expansion = 4
 
     def __init__(self, in_channels, channels, stride = 1, downsample = None, groups = 1, base_width = 64, dilation = 1, norm_layer = None):
@@ -87,7 +137,17 @@ class Block(nn.Module):
         return out
 
 class FeatureNetwork(torch.nn.Module):
-    def __init__(self, layers, num_classes = 1000, zero_init_residual = False, groups =1, width_per_group = 64, replace_stride_with_dilation = None, norm_layer = None):
+    '''
+    model for deep neural network that encode each phonon band into a feature vector.
+    This model modifies ResNet, deep residual learning network, such that it can handle
+    3D images as input. 
+    '''
+    def __init__(self, n_layers, n_features, zero_init_residual = False, groups =1, width_per_group = 64, replace_stride_with_dilation = None, norm_layer = None):
+        '''
+        arguments:
+            n_layers: ResNet hyper-parameters: '[2, 2, 2, 2]' is for ResNet18
+            n_features: feature vector space dimensions
+        '''
         super().__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm3d
@@ -101,16 +161,16 @@ class FeatureNetwork(torch.nn.Module):
                             f"or a 3-element tuple, got {replace_stride_with_dilation}")
         self.groups = groups
         self.base_width = width_per_group
-        self.conv1 = nn.Conv3d(3, self.in_channels, kernel_size = 7, stride = 2, padding = 3, bias = False)
+        self.conv1 = nn.Conv3d(1, self.in_channels, kernel_size = 7, stride = 2, padding = 3, bias = False)
         self.bn1 = norm_layer(self.in_channels)
         self.relu = nn.ReLU(inplace = True)
         self.maxpool = nn.MaxPool3d(kernel_size = 3, stride = 2, padding = 1)
-        self.layer1 = self._make_layer(Block, 64, layers[0])
-        self.layer2 = self._make_layer(Block, 128, layers[1], stride = 2, dilate = replace_stride_with_dilation[0])
-        self.layer3 = self._make_layer(Block, 256, layers[2], stride = 2, dilate = replace_stride_with_dilation[1])
-        self.layer4 = self._make_layer(Block, 512, layers[3], stride = 2, dilate = replace_stride_with_dilation[2])
-        self.avgpool = nn.AdaptiveAvgPool3d((1, 1))
-        self.fc = nn.Linear(512 * Block.expansion, num_classes)
+        self.layer1 = self._make_layer(64, n_layers[0])
+        self.layer2 = self._make_layer(128, n_layers[1], stride = 2, dilate = replace_stride_with_dilation[0])
+        self.layer3 = self._make_layer(256, n_layers[2], stride = 2, dilate = replace_stride_with_dilation[1])
+        self.layer4 = self._make_layer(512, n_layers[3], stride = 2, dilate = replace_stride_with_dilation[2])
+        self.avgpool = nn.AdaptiveAvgPool3d((1, 1, 1))
+        self.fc = nn.Linear(512 * Block.expansion, n_features)
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -175,59 +235,173 @@ class FeatureNetwork(torch.nn.Module):
         return x
 
     def forward(self, bands):
+        '''
+        arguments:
+            bands: phonon frequency responses data object
+        return:
+            feature vector of each phonon band
+        '''
         return self._forward_impl(bands)
 
 class ProjectionNetwork(torch.nn.Module):
+    '''
+    model for projecting feature vectors  into a space used
+    for measuring noise contrastive estimation (NCE) loss.
+    '''
     def __init__(self, n_features):
+        '''
+        arguments:
+            n_features: feature vector space dimensions
+        '''
         super().__init__()
         self.mlp1 = nn.Linear(n_features, n_features)
         self.mlp2 = nn.Linear(n_features, n_features)
     
     def forward(self, features):
+        '''
+        arguments:
+            features: feature vectors of each phonon band from feature encoder
+        return:
+            feature vector of each phonon band on the projected space
+        '''
         x = F.relu(self.mlp1(features))
         x = self.mlp2(x)
         return x
 
 class ContrastiveNetwork(torch.nn.Module):
+    '''
+    model for contrastive learning. Attach projection network to the feature network.
+    '''
     def __init__(self, feature_model, projection_model):
+        '''
+        arguments:
+            feature_model: FeatureNetwork model
+            projection_model: ProjectionNetwork model
+        '''
         super().__init__()
         self.feature_model = feature_model
         self.projection_model = projection_model
     
-    def forward(self, data):
-        features = self.feature_model(data.bands)
+    def forward(self, phn):
+        '''
+        arguments:
+            phn: phonon frequency responses data object
+        return:
+            feature vector of each phonon band on the projected space
+        '''
+        features = self.feature_model(phn)
         features = self.projection_model(features)
         return features
 
 def cos_sim(features):
+    '''
+    calculate cos similarity of every pair of features
+    arguments:
+        features: feature vectors for all bands of the material
+    return:
+        cos similarity matrix
+    '''
     nfeatures = torch.nn.functional.normalize(features, p = 2, dim = 1)
     return torch.matmul(nfeatures, nfeatures.T)
 
-from torch_geometric.loader import DataLoader
-import time
-from matplotlib.pyplot import plt
-import numpy as np
-import math
+def loglinspace(rate, step, end = None):
+    '''
+    calculate the time steps for model evaluation such that 
+    each subsequence time steps are exponentially further apart
+    arguments:
+        rate: evaluation rate
+        step: time step
+        end: end step
+    return:
+        next time step for evaluating the model
+    '''
+    t = 0
+    while end is None or t <= end:
+        yield t
+        t = int(t + 1 + step*(1 - math.exp(-t*rate/step)))
+            
+def evaluate(model, dataloader, loss_fn, device, BA):
+    '''
+    evaluate a model on data in dataloader
+    arguments:
+        model: contrastive learning model
+        dataloader: torch dataloader
+        loss_fn: loss function
+        device: torch device (cpu/cuda)
+        BA: band augmentation function
+    return:
+        average loss of the data in dataloader
+    '''
+    model.eval()
+    loss_cumulative = 0.
 
-def train(model,
-          opt,
-          tr_set,
-          tr_nums,
-          te_set,
-          loss_fn,
-          run_name,
-          max_iter,
-          scheduler,
-          device,
-          batch_size,
-          k_fold):
+    with torch.no_grad():
+        for d in dataloader:
+            d.to(device)
+            
+            # augment positive pair and get feature of all bands
+            phns = torch.concat((d.phns, torch.from_numpy(BA(d.phns.cpu().numpy())).to(device)), dim = 0)
+            features = model(phns)
+
+            # loss calculation and backward propagation
+            loss = loss_fn(features, d.non_neg_mask, d.pos_mask).cpu()
+            loss_cumulative += loss.detach().item()
+
+    return loss_cumulative/len(dataloader)      
+
+def loss_plot(run_name, model_dir, device):
+    '''
+    plot loss evolution
+    arguments:
+        run_name: model name
+        model_dir: folder for output
+        device: torch device (cpu/cuda)
+    return:
+        None
+    '''
+    history = torch.load(f'{model_dir}{run_name}_contrastive.torch', map_location = device)['history']
+    steps = [d['step'] + 1 for d in history]
+    tr_loss = [d['train']['loss'] for d in history]
+    va_loss = [d['valid']['loss'] for d in history]
+    te_loss = [d['test']['loss'] for d in history]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.plot(steps, tr_loss, 'o-', label = 'Training')
+    ax.plot(steps, va_loss, 'o-', label = 'Validation')
+    ax.plot(steps, te_loss, 'o-', label = 'Test')
+    ax.set_xlabel('epochs')
+    ax.set_ylabel('loss')
+    ax.legend()
+    fig.savefig(f'{model_dir}{run_name}_loss_train_valid.png')
+    plt.close()
+
+def train(model, opt, tr_sets, te_set, loss_fn, run_name, model_dir, max_iter, scheduler, device, batch_size, k_fold):
+    '''
+    main training function
+    arguments:
+        model: contrastive learning model
+        opt: torch optimizer
+        tr_sets: training set
+        te_set: testing set
+        loss_fn: loss function
+        run_name: model name
+        model_dir: folder for output
+        max_iter: total epochs
+        scheduler: learning rate decay scheduler
+        device: torch device (cpu/cuda)
+        batch_size: always set to 1 to go material by material
+        k_fold: number of cross-validation blocks
+    return:
+        None
+    '''
+    # set up model
     model.to(device)
+
+    # set up model tracking
     checkpoint_generator = loglinspace(0.3, 5)
     checkpoint = next(checkpoint_generator)
     start_time = time.time()
-
     record_lines = []
-
     try:
         print('Use model.load_state_dict to load the existing model: ' + run_name + '.torch')
         model.load_state_dict(torch.load(run_name + '.torch')['state'])
@@ -242,45 +416,59 @@ def train(model,
         history = results['history']
         s0 = history[-1]['step'] + 1
 
-    tr_sets = torch.utils.data.random_split(tr_set, tr_nums)
-    te_loader = DataLoader(te_set, batch_size = batch_size)
+    # setup phonon band augmentation
+    BA = BandAugmentations()
+
     for step in range(max_iter):
+        
+        # merge cross-validation blocks for each step, and prepare data loader for training, validating, and testing
         k = step % k_fold 
         tr_loader = DataLoader(torch.utils.data.ConcatDataset(tr_sets[:k] + tr_sets[k+1:]), batch_size = batch_size, shuffle=True)
         va_loader = DataLoader(tr_sets[k], batch_size = batch_size)
+        te_loader = DataLoader(te_set, batch_size = batch_size)
+
+        # train model
         model.train()
         N = len(tr_loader)
         for i, d in enumerate(tr_loader):
             start = time.time()
             d.to(device)
-            features = model(d)
-            loss = loss_fn(batch, not_neg_mask, pos_mask).cpu()  #! define not_neg_mask, pos_mask
+
+            # augment positive pair and get feature of all bands
+            phns = torch.concat((d.phns, torch.from_numpy(BA(d.phns.cpu().numpy())).to(device)), dim = 0)
+            features = model(phns)
+
+            # loss calculation and backward propagation
+            loss = loss_fn(features, d.non_neg_mask, d.pos_mask).cpu()
             opt.zero_grad()
             loss.backward()
             opt.step()
 
             print(f'num {i+1:4d}/{N}, loss = {loss}, train time = {time.time() - start}', end = '\r')
+        wall = time.time() - start_time
 
-        end_time = time.time()
-        wall = end_time - start_time
-        print(wall)
+        # keep track record of trained model
         if step == checkpoint:
             checkpoint = next(checkpoint_generator)
             assert checkpoint > step
 
-            valid_avg_loss = evaluate(model, va_loader, loss_fn, device)
-            train_avg_loss = evaluate(model, tr_loader, loss_fn, device)
+            tr_avg_loss = evaluate(model, tr_loader, loss_fn, device, BA)
+            va_avg_loss = evaluate(model, va_loader, loss_fn, device, BA)
+            te_avg_loss = evaluate(model, te_loader, loss_fn, device, BA)
             history.append({
                             'step': s0 + step,
                             'wall': wall,
                             'batch': {
                                     'loss': loss.item(),
                                     },
-                            'valid': {
-                                    'loss': valid_avg_loss,
-                                    },
                             'train': {
-                                    'loss': train_avg_loss,
+                                    'loss': tr_avg_loss,
+                                    },
+                            'valid': {
+                                    'loss': va_avg_loss,
+                                    },
+                            'test': {
+                                    'loss': te_avg_loss,
                                     },
                            })
             results = {
@@ -290,78 +478,30 @@ def train(model,
             results_feature = {
                         'state': model.feature_model.state_dict()
                       }
-            print(f"Iteration {step+1:4d}   " +
-                  f"train loss = {train_avg_loss:8.20f}   " +
-                  f"valid loss = {valid_avg_loss:8.20f}   " +
-                  f"elapsed time = {time.strftime('%H:%M:%S', time.gmtime(wall))}")
+            elapsed_time = time.strftime('%H:%M:%S', time.gmtime(wall))
+            print(f'Iteration {step+1:4d}   ' +
+                  f'train loss = {tr_avg_loss:8.20f}   ' +
+                  f'valid loss = {va_avg_loss:8.20f}   ' +
+                  f'test loss = {te_avg_loss:8.20f}   ' +
+                  f'elapsed time = {elapsed_time}')
 
-            with open(run_name + '_contrastive.torch', 'wb') as f:
+            # save models
+            with open(f'{model_dir}{run_name}_contrastive.torch', 'wb') as f:
                 torch.save(results, f)
-            with open(run_name + '_feature.torch', 'wb') as f:
+            with open(f'{model_dir}{run_name}_feature.torch', 'wb') as f:
                 torch.save(results_feature, f)
 
-            record_line = '%d\t%.20f\t%.20f'%(step,train_avg_loss,valid_avg_loss)
+            record_line = '%d\t%.20f\t%.20f\t%.20f'%(step, tr_avg_loss, va_avg_loss, te_avg_loss)
             record_lines.append(record_line)
 
-            loss_plot(run_name, device, './models/' + run_name)
-            loss_test_plot(model, device, './models/' + run_name, te_loader, loss_fn)
-
-            # plot the output by the model.feature_model
+            # plot loss evolution
+            loss_plot(run_name, model_dir, device)
             
-        text_file = open(run_name + ".txt", "w")
+        # save loss evolution
+        text_file = open(f'{model_dir}{run_name}.txt', 'w')
         for line in record_lines:
-            text_file.write(line + "\n")
+            text_file.write(line + '\n')
         text_file.close()
 
         if scheduler is not None:
             scheduler.step()
-
-def loglinspace(rate, step, end=None):
-    t = 0
-    while end is None or t <= end:
-        yield t
-        t = int(t + 1 + step*(1 - math.exp(-t*rate/step)))
-            
-def evaluate(model, dataloader, loss_fn, device):
-    model.eval()
-    loss_cumulative = 0.
-    with torch.no_grad():
-        for d in dataloader:
-            d.to(device)
-            features = model(d)
-            loss = loss_fn(batch, not_neg_mask, pos_mask).cpu()  #! define not_neg_mask, pos_mask
-            loss_cumulative += loss.detach().item()
-    return loss_cumulative/len(dataloader)
-
-
-def loss_plot(model_file, device, fig_file):
-    history = torch.load(model_file + '.torch', map_location = device)['history']
-    steps = [d['step'] + 1 for d in history]
-    loss_train = [d['train']['loss'] for d in history]
-    loss_valid = [d['valid']['loss'] for d in history]
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.plot(steps, loss_train, 'o-', label='Training')
-    ax.plot(steps, loss_valid, 'o-', label='Validation')
-    ax.set_xlabel('epochs')
-    ax.set_ylabel('loss')
-    ax.legend()
-    fig.savefig(fig_file  + '_loss_train_valid.png')
-    plt.close()
-
-def loss_test_plot(model, device, fig_file, dataloader, loss_fn):
-    loss_test = []
-    model.to(device)
-    model.eval()
-    with torch.no_grad():
-        for d in dataloader:
-            d.to(device)
-            batch = model(d)
-            loss = loss_fn(batch, not_neg_mask, pos_mask).cpu()  #! define not_neg_mask, pos_mask
-            loss_test.append(loss)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.plot(np.array(loss_test), label = 'testing loss: ' + str(np.mean(loss_test)))
-    ax.set_ylabel('loss')
-    ax.legend()
-    fig.savefig(fig_file + '_loss_test.png')
-    plt.close()
