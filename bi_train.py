@@ -1,70 +1,84 @@
-import glob
-import torch
 import time
-from utils.utils_data import gen_cart_qpts, gen_qpts_file, read_qpts_file, load_data
-from utils.utils_model import BandAugmentations, NCELoss, FeatureNetwork, ProjectionNetwork, ContrastiveNetwork, cos_sim, train
-torch.set_default_dtype(torch.float64)
+import torch
+import random
+import os
+import numpy as np
+
+# set deterministic behavior before importing other sub-modules
+all_seed = 177013
+set_deterministic = True
+
+print(f'Deterministic behavior is set to be {set_deterministic}')
+if set_deterministic:
+    np.random.seed(all_seed)
+    random.seed(all_seed)
+    torch.manual_seed(all_seed)
+    torch.cuda.manual_seed_all(all_seed)
+    os.environ['PYTHONHASHSEED'] = str(all_seed)
+    print(f'Random seed is set as {all_seed}')
+
+# set torch module behavior before importing other sub-modules
 if torch.cuda.is_available():
     device = 'cuda'
 else:
     device = 'cpu'
+print('device: ', device)
+torch.set_default_dtype(torch.float64)
 
-L = 1000
-n = 1000
+from utils.utils_data import load_data, build_tr_set
+from utils.utils_model import NCELoss, FeatureNetwork, ProjectionNetwork, ContrastiveNetwork, cos_sim, train
 
-dat_dir = './data/'
-phn_dir = f'{dat_dir}raw/'
-dict_file = f'{dat_dir}data_dict.pkl'
-model_dir = './models/'
+# set the model name by time of initialization
 run_name = time.strftime('%y%m%d-%H%M%S', time.localtime())
-max_iter = 10
-n_layers = 5
-n_features = 512
-tr_ratio = 0.9
-batch_size = 1
-k_fold = 5
 
-if len(glob.glob('./CART_QPOINTS')) == 0:
-    cart_qpts = gen_cart_qpts(L, n)
-    gen_qpts_file(cart_qpts, './CART_QPOINTS')
-else:
-    cart_qpts = read_qpts_file('./CART_QPOINTS')
-data_dict = load_data(dict_file, phn_dir, dat_dir, cart_qpts)
+# set hyper-parameters
+n = 20                      # grid-sampling frequency
+re_sampling = False         # redo grid-sampling
 
-# ToDo: Use BandAugmentations()
+data_ratio = 0.15           # fraction of data from database (10,034) to be used
+tr_ratio = 0.8              # fraction of used data for training
+k_fold = 5                  # number of cross-validation blocks
+max_iter = 100              # total epochs
 
-num = len(data_dict)
-tr_nums = [int((num * tr_ratio)//k_fold)] * k_fold
-te_num = num - sum(tr_nums)
-tr_set, te_set = torch.utils.data.random_split(list(data_dict.values()), [num - te_num, te_num])
+delta = 0.001               # tolerance for negative samples
+phn_mean = 10               # z-normalization shift
+phn_sigma = 120             # z-normalization factor
+n_layers = [2, 2, 2, 2]     # ResNet hyper-parameters: '[2, 2, 2, 2]' is for ResNet18
+n_features = 32             # feature vector space dimensions
 
-loss_fn = NCELoss(sim_fn=cos_sim, T=1)
-lr = 0.005
-weight_decay = 0.05
-schedule_gamma = 0.96
+batch_size = 1              # always set to 1 to go material by material
+lr = 0.005                  # learning rate
+weight_decay = 0.05         # AdamW weight decay
+schedule_gamma = 0.96       # learning rate decaying factor
 
-f_model = FeatureNetwork(n_layers, 
-                         num_classes = 1000, 
-                         zero_init_residual = False, 
-                         groups =1, 
-                         width_per_group = 64, 
-                         replace_stride_with_dilation = None, 
-                         norm_layer = None)
+# path setting for necessary files and folders
+zip_dir = './data/zip/'
+raw_dir = './data/raw/'
+phn_dir = './data/phn/'
+dict_file = f'./data/data_dict_{run_name}.pkl'
+model_dir = './models/'
+
+# data preparation
+data_dict = load_data(dict_file, phn_dir = phn_dir, raw_dir = raw_dir, zip_dir = zip_dir, data_ratio = data_ratio, re_sampling = re_sampling, n = n)
+data_set = build_tr_set(data_dict, delta, phn_mean, phn_sigma)
+
+num = len(data_set)
+tr_num = int(num * tr_ratio)
+te_num = num - tr_num
+fold_size = int(tr_num // k_fold)
+tr_nums = [fold_size] * (k_fold - 1) + [tr_num - fold_size * (k_fold - 1)]
+
+tr_set, te_set = torch.utils.data.random_split(data_set, [tr_num, te_num])
+tr_sets = torch.utils.data.random_split(tr_set, tr_nums)
+
+# set up loss function, model, and optimization
+loss_fn = NCELoss(sim_fn = cos_sim, T = 1)
+f_model = FeatureNetwork(n_layers, n_features)
 p_model = ProjectionNetwork(n_features)
 c_model = ContrastiveNetwork(f_model, p_model)
 
 opt = torch.optim.AdamW(c_model.parameters(), lr = lr, weight_decay = weight_decay)
 scheduler = torch.optim.lr_scheduler.ExponentialLR(opt, gamma = schedule_gamma)
 
-train(c_model,
-          opt,
-          tr_set,
-          tr_nums,
-          te_set,
-          loss_fn,
-          run_name,
-          max_iter,
-          scheduler,
-          device,
-          batch_size,
-          k_fold)
+# start training
+train(c_model, opt, tr_sets, te_set, loss_fn, run_name, model_dir, max_iter, scheduler, device, batch_size, k_fold)
