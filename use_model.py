@@ -52,8 +52,8 @@ model_file = f'{model_dir}{run_name}_contrastive.torch'
 f_model = FeatureNetwork(n_layers, n_features)
 p_model = ProjectionNetwork(n_features)
 c_model = ContrastiveNetwork(f_model, p_model)
-c_model.to(device)
-c_model.load_state_dict(torch.load(model_file)['state'])
+f_model.to(device)
+f_model.load_state_dict(torch.load(model_file)['state'])
 
 # load input data
 data_dict = load_data(dict_file)
